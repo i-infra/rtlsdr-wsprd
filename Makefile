@@ -2,6 +2,13 @@ CC ?= clang
 CFLAGS = -O3 -std=gnu17 -Wall -Wextra -Wno-unused-parameter -MMD
 LIBS = -lusb-1.0 -lrtlsdr -lpthread -lfftw3f -lcurl -lm
 
+# Homebrew support (macOS)
+HOMEBREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+ifneq ($(HOMEBREW_PREFIX),)
+	CFLAGS += -I$(HOMEBREW_PREFIX)/include
+	LDFLAGS += -L$(HOMEBREW_PREFIX)/lib
+endif
+
 # Note
 #   gcc is a bit faster that clang on this app
 #   for dbg: -fsanitize=address

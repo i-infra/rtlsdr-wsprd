@@ -168,7 +168,7 @@ static void rtlsdr_callback(unsigned char *samples, uint32_t samples_count, void
        (Keep the upper band, IQ inverted on RTL devices)
     */
     int8_t tmp;
-    for (uint32_t i = 0; i < samples_count; i += 8) {
+    for (uint32_t i = 0; i + 7 < samples_count; i += 8) {
         sigIn[i  ] ^=  0x80;  // Unsigned to signed conversion using
         sigIn[i+1] ^=  0x80;  //   XOR as a binary mask to flip the first bit
         tmp         =  (sigIn[i+3] ^ 0x80);
@@ -553,23 +553,30 @@ int32_t parse_u64(char *s, uint64_t *const value) {
 
 
 int32_t readRawIQfile(float *iSamples, float *qSamples, const char *filename) {
-    float filebuffer[2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE];
-    FILE *fd = fopen(filename, "rb");
+    float *filebuffer = malloc(sizeof(float) * 2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE);
+    if (!filebuffer) {
+        fprintf(stderr, "Cannot allocate memory for IQ buffer\n");
+        return 0;
+    }
 
+    FILE *fd = fopen(filename, "rb");
     if (fd == NULL) {
         fprintf(stderr, "Cannot open data file...\n");
+        free(filebuffer);
         return 0;
     }
 
     /* Read the IQ file */
     int32_t nread = fread(filebuffer, sizeof(float), 2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE, fd);
     int32_t recsize = nread / 2;
+    fclose(fd);
 
     /* Convert the interleaved buffer into 2 buffers */
     for (int32_t i = 0; i < recsize; i++) {
         iSamples[i] =  filebuffer[2 * i];
         qSamples[i] = -filebuffer[2 * i + 1];  // neg, convention used by wsprsim
     }
+    free(filebuffer);
 
     /* Normalize the sample @-3dB */
     float maxSig = 1e-24f;
@@ -583,7 +590,7 @@ int32_t readRawIQfile(float *iSamples, float *qSamples, const char *filename) {
             maxSig = absQ;
     }
     maxSig = 0.5 / maxSig;
-    for (int i = 0; i <recsize; i++) {
+    for (int i = 0; i < recsize; i++) {
         iSamples[i] *= maxSig;
         qSamples[i] *= maxSig;
     }
@@ -593,11 +600,16 @@ int32_t readRawIQfile(float *iSamples, float *qSamples, const char *filename) {
 
 
 int32_t writeRawIQfile(float *iSamples, float *qSamples, const char *filename) {
-    float filebuffer[2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE];
+    float *filebuffer = malloc(sizeof(float) * 2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE);
+    if (!filebuffer) {
+        fprintf(stderr, "Cannot allocate memory for IQ buffer\n");
+        return 0;
+    }
 
     FILE *fd = fopen(filename, "wb");
     if (fd == NULL) {
         fprintf(stderr, "Cannot open data file...\n");
+        free(filebuffer);
         return 0;
     }
 
@@ -607,8 +619,10 @@ int32_t writeRawIQfile(float *iSamples, float *qSamples, const char *filename) {
     }
 
     int32_t nwrite = fwrite(filebuffer, sizeof(float), 2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE, fd);
+    free(filebuffer);
     if (nwrite != 2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE) {
         fprintf(stderr, "Cannot write all the data!\n");
+        fclose(fd);
         return 0;
     }
 
@@ -618,7 +632,12 @@ int32_t writeRawIQfile(float *iSamples, float *qSamples, const char *filename) {
 
 
 int32_t readC2file(float *iSamples, float *qSamples, const char *filename) {
-    float filebuffer[2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE];
+    float *filebuffer = malloc(sizeof(float) * 2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE);
+    if (!filebuffer) {
+        fprintf(stderr, "Cannot allocate memory for IQ buffer\n");
+        return 0;
+    }
+
     FILE *fd = fopen(filename, "rb");
     int32_t nread;
     double frequency;
@@ -627,6 +646,7 @@ int32_t readC2file(float *iSamples, float *qSamples, const char *filename) {
 
     if (fd == NULL) {
         fprintf(stderr, "Cannot open data file...\n");
+        free(filebuffer);
         return 0;
     }
 
@@ -639,12 +659,14 @@ int32_t readC2file(float *iSamples, float *qSamples, const char *filename) {
     /* Read the IQ file */
     nread = fread(filebuffer, sizeof(float), 2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE, fd);
     int32_t recsize = nread / 2;
+    fclose(fd);
 
     /* Convert the interleaved buffer into 2 buffers */
     for (int32_t i = 0; i < recsize; i++) {
         iSamples[i] =  filebuffer[2 * i];
         qSamples[i] = -filebuffer[2 * i + 1];  // neg, convention used by wsprsim
     }
+    free(filebuffer);
 
     /* Normalize the sample @-3dB */
     float maxSig = 1e-24f;
@@ -658,7 +680,7 @@ int32_t readC2file(float *iSamples, float *qSamples, const char *filename) {
             maxSig = absQ;
     }
     maxSig = 0.5 / maxSig;
-    for (int i = 0; i <recsize; i++) {
+    for (int i = 0; i < recsize; i++) {
         iSamples[i] *= maxSig;
         qSamples[i] *= maxSig;
     }
@@ -673,9 +695,10 @@ void decodeRecordedFile(const char *filename) {
     static uint32_t samples_len;
     int32_t n_results = 0;
 
-    if (strcmp(&filename[strlen(filename)-3], ".iq") == 0) {
+    size_t fnlen = strlen(filename);
+    if (fnlen >= 3 && strcmp(&filename[fnlen-3], ".iq") == 0) {
         samples_len = readRawIQfile(iSamples, qSamples, filename);
-    } else if (strcmp(&filename[strlen(filename)-3], ".c2") == 0) {
+    } else if (fnlen >= 3 && strcmp(&filename[fnlen-3], ".c2") == 0) {
         samples_len = readC2file(iSamples, qSamples, filename);
     } else {
         fprintf(stderr, "Not a valid extension!! (only .iq & .c2 files)\n");
@@ -827,6 +850,11 @@ void usage(FILE *stream, int32_t status) {
 
 
 int main(int argc, char **argv) {
+    /* Must be called once on the main thread before any background thread
+       calls curl_easy_init(); otherwise macOS SSL/DNS init is not thread-safe
+       and causes random Bus Errors. */
+    curl_global_init(CURL_GLOBAL_ALL);
+
     uint32_t opt;
     char    *short_options = "f:c:l:g:ao:p:u:d:n:i:tw:r:HQSx";
     int32_t  option_index = 0;
@@ -1150,21 +1178,27 @@ int main(int argc, char **argv) {
     printf("Wait for time sync (start in %d sec)\n\n", uwait / 1000000);
     printf("              Date   Time    SNR     DT       Freq Dr    Call    Loc Pwr\n");
 
-    /* Prepare a low priority param for the decoder thread */
-    struct sched_param param;
-    pthread_attr_init(&decState.tattr);
-    pthread_attr_setschedpolicy(&decState.tattr, SCHED_RR);
-    pthread_attr_getschedparam(&decState.tattr, &param);
-    param.sched_priority = 90;  // = sched_get_priority_min();
-    pthread_attr_setschedparam(&decState.tattr, &param);
-
     /* Create a thread and stuff for separate decoding
        Info : https://computing.llnl.gov/tutorials/pthreads/
+       Note: SCHED_RR requires root on macOS and causes pthread_create to fail
+       silently for normal users, leaving decState.thread uninitialized and
+       crashing pthread_join at exit. Use default attributes instead.
     */
     pthread_cond_init(&decState.ready_cond, NULL);
     pthread_mutex_init(&decState.ready_mutex, NULL);
     pthread_create(&dongle, NULL, rtlsdr_rx, NULL);
-    pthread_create(&decState.thread, &decState.tattr, decoder, NULL);
+
+    /* Explicitly set stack size to 8MB (macOS default is 512KB; Linux is 8MB).
+       wspr_decode() uses large heap allocations but also has significant frame
+       depth; without this the decoder thread hits the guard page immediately. */
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+    if (pthread_create(&decState.thread, &attr, decoder, NULL) != 0) {
+        fprintf(stderr, "Failed to create decoder thread\n");
+        exit(EXIT_FAILURE);
+    }
+    pthread_attr_destroy(&attr);
 
     /* Main loop : Wait, read, decode */
     while (!rx_state.exit_flag && !(rx_options.maxloop && (rx_options.nloop >= rx_options.maxloop))) {
@@ -1200,6 +1234,7 @@ int main(int argc, char **argv) {
     pthread_cond_destroy(&decState.ready_cond);
     pthread_mutex_destroy(&decState.ready_mutex);
 
+    curl_global_cleanup();
     printf("Bye!\n");
 
     return EXIT_SUCCESS;
