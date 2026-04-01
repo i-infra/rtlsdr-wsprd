@@ -20,12 +20,8 @@
 #pragma once
 
 #include <unistd.h>
-
-#ifndef bool
-    typedef uint32_t bool;
-    #define true 1
-    #define false 0
-#endif
+#include <stdbool.h>
+#include <stdint.h>
 
 
 static void rtlsdr_callback(unsigned char *samples, uint32_t samples_count, void *ctx);

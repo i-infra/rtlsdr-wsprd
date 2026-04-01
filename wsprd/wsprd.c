@@ -472,11 +472,16 @@ int wspr_decode(float  *idat,
         mettab[1][i] = roundf(10.0 * (metric_tables[2][255 - i] - bias));
     }
 
-    /* Setup/Load hash tables */
+    /* Setup/Load hash tables (heap to avoid ~585KB on stack) */
     FILE  *fhash;
     int   nh;
-    char  hashtab[HASHTAB_SIZE * HASHTAB_ENTRY_LEN] = {0};
-    char  loctab[HASHTAB_SIZE * LOCTAB_ENTRY_LEN] = {0};
+    char  *hashtab = calloc(HASHTAB_SIZE, HASHTAB_ENTRY_LEN);
+    char  *loctab  = calloc(HASHTAB_SIZE, LOCTAB_ENTRY_LEN);
+    if (!hashtab || !loctab) {
+        free(hashtab);
+        free(loctab);
+        return -1;
+    }
 
     if (options.usehashtable) {
         char line[80], hcall[12], hgrid[5];;
@@ -512,10 +517,17 @@ int wspr_decode(float  *idat,
         hann[i] = sinf(0.006147931 * i);
     }
 
-    /* FFT output alloc */
+    /* FFT output alloc (heap to avoid stack overflow with ~715KB VLA) */
     const int blocks = 4 * floor(samples / FFT_SIZE) - 1;
-    float ps[FFT_SIZE][blocks];
-    memset(ps, 0.0, sizeof(float) * FFT_SIZE * blocks);
+    float (*ps)[blocks] = calloc(FFT_SIZE, sizeof(float[blocks]));
+    if (!ps) {
+        free(hashtab);
+        free(loctab);
+        fftwf_free(fftin);
+        fftwf_free(fftout);
+        fftwf_destroy_plan(PLAN);
+        return -1;
+    }
 
     /* Main loop starts here */
     for (int ipass = 0; ipass < options.npasses; ipass++) {
@@ -654,7 +666,7 @@ int wspr_decode(float  *idat,
                         for (int k = 0; k < NSYM; k++) {  // Sum over symbols
                             int ifd = ifr + ((float)k - (float)NBITS) / (float)NBITS * ((float)idrift) / DF;
                             int kindex = k0 + 2 * k;
-                            if (kindex < blocks) {
+                            if (kindex < blocks && ifd >= 3 && ifd + 3 < FFT_SIZE) {
                                 float p0 = sqrtf(ps[ifd - 3][kindex]);
                                 float p1 = sqrtf(ps[ifd - 1][kindex]);
                                 float p2 = sqrtf(ps[ifd + 1][kindex]);
@@ -829,6 +841,7 @@ int wspr_decode(float  *idat,
     /* Return number of spots to the calling fct */
     *n_results = uniques;
 
+    free(ps);
     fftwf_free(fftin);
     fftwf_free(fftout);
 
@@ -850,6 +863,9 @@ int wspr_decode(float  *idat,
             fclose(fhash);
         }
     }
+
+    free(hashtab);
+    free(loctab);
 
     return 0;
 }
