@@ -258,7 +258,7 @@ static void rtlsdr_callback(unsigned char *samples, uint32_t samples_count, void
              * Understanding cascaded integrator-comb filters
                https://www.embedded.com/design/configurable-systems/4006446/Understanding-cascaded-integrator-comb-filters
     */
-    for (int32_t i = 0; i < samples_count / 2; i++) {
+    for (uint32_t i = 0; i < samples_count / 2; i++) {
         /* Integrator stages (N=2) */
         Ix1 += (int32_t)sigIn[i * 2];
         Qx1 += (int32_t)sigIn[i * 2 + 1];
@@ -791,7 +791,7 @@ void decodeRecordedFile(const char *filename) {
         wspr_decode(iSamples, qSamples, samples_len, dec_options, dec_results, &n_results);
 
         printf("        SNR      DT        Freq Dr    Call    Loc Pwr\n");
-        for (uint32_t i = 0; i < n_results; i++) {
+        for (int32_t i = 0; i < n_results; i++) {
             printf("Spot : %6.2f %6.2f %10.6f %2d %7s %6s %2s\n",
                    dec_results[i].snr,
                    dec_results[i].dt,
@@ -868,7 +868,7 @@ int32_t decoderSelfTest() {
     wspr_decode(iSamples, qSamples, samples_len, dec_options, dec_results, &n_results);
 
     printf("        SNR      DT        Freq Dr    Call    Loc Pwr\n");
-    for (uint32_t i = 0; i < n_results; i++) {
+    for (int32_t i = 0; i < n_results; i++) {
         printf("Spot(%i) %6.2f %6.2f %10.6f %2d %7s %6s %2s\n",
                i,
                dec_results[i].snr,
@@ -936,7 +936,7 @@ int main(int argc, char **argv) {
        and causes random Bus Errors. */
     curl_global_init(CURL_GLOBAL_ALL);
 
-    uint32_t opt;
+    int opt;
     char    *short_options = "f:c:l:g:ao:p:u:d:n:i:tw:W:r:HQSx";
     int32_t  option_index = 0;
     struct option long_options[] = {
@@ -1185,7 +1185,7 @@ int main(int argc, char **argv) {
     }
 
     fprintf(stderr, "Found %d device(s):\n", rtl_count);
-    for (uint32_t i = 0; i < rtl_count; i++) {
+    for (int32_t i = 0; i < rtl_count; i++) {
         rtlsdr_get_device_usb_strings(i, rtl_vendor, rtl_product, rtl_serial);
         fprintf(stderr, "  %d:  %s, %s, SN: %s\n", i, rtl_vendor, rtl_product, rtl_serial);
     }
