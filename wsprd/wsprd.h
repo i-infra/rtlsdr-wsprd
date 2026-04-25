@@ -40,6 +40,20 @@
 #define MAX_CANDIDATES     200
 #define MAX_UNIQUES        100
 
+/* DC spike rejection: skip candidates within +/- DC_REJECT_BW Hz of DC
+   whose SNR exceeds the next-best candidate by DC_REJECT_MARGIN dB.
+   RTL-SDR devices commonly leak the LO into the digitised stream,
+   producing a strong false peak at exactly 0 Hz offset. */
+#define DC_REJECT_BW       2.0f    /* Hz half-width around DC */
+#define DC_REJECT_MARGIN   15.0f   /* dB above the next candidate */
+
+/* Maximum consecutive Fano timeouts per candidate before abandoning the
+   jigger loop early.  A real signal occasionally times out on one offset
+   but succeeds on the next; a DC spike or spurious peak times out on
+   every attempt.  3 is a good balance: it still gives a real marginal
+   signal a few chances while cutting the worst-case ~43-iteration burn. */
+#define MAX_JIGGER_TIMEOUTS 3
+
 /* Option & config of decoder (Shared with the wsprd code) */
 struct decoder_options {
     int  freq;          // Dial frequency

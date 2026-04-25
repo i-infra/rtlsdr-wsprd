@@ -642,6 +642,22 @@ int wspr_decode(float  *idat,
 
         qsort(candidates, npk, sizeof(struct cand), cand_snr_desc);
 
+        /* DC spike rejection: RTL-SDR LO leakage produces a strong false
+           peak near 0 Hz.  After sorting by SNR, check if the top candidate
+           is suspiciously close to DC and far stronger than the runner-up. */
+        if (npk >= 2 &&
+            fabsf(candidates[0].freq) <= DC_REJECT_BW &&
+            (candidates[0].snr - candidates[1].snr) >= DC_REJECT_MARGIN) {
+            /* Shift array down by one, dropping the DC candidate. */
+            for (int k = 0; k < npk - 1; k++)
+                candidates[k] = candidates[k + 1];
+            npk--;
+        } else if (npk == 1 &&
+                   fabsf(candidates[0].freq) <= DC_REJECT_BW &&
+                   candidates[0].snr >= DC_REJECT_MARGIN) {
+            npk = 0;
+        }
+
         /* Make coarse estimates of shift (DT), freq, and drift
          * Look for time offsets up to +/- 8 symbols (about +/- 5.4 s) relative
            to nominal start time, which is 2 seconds into the file
@@ -750,6 +766,7 @@ int wspr_decode(float  *idat,
 
             int idt = 0, ii = 0;
             int not_decoded = 1;
+            int consecutive_timeouts = 0;
             while (worth_a_try && not_decoded && idt <= (128 / iifac)) {
                 ii = (idt + 1) / 2;
                 if (idt % 2 == 1) ii = -ii;
@@ -771,9 +788,23 @@ int wspr_decode(float  *idat,
                     deinterleave(symbols);
                     not_decoded = fano(&metric, &cycles, &maxnp, decdata, symbols, NBITS,
                                        mettab, delta, maxcycles);
+                    if (not_decoded) {
+                        /* Detect Fano timeout: cycles >= maxcycles*NBITS means the
+                           decoder hit the wall without converging. */
+                        if (cycles >= (unsigned int)maxcycles * NBITS) {
+                            consecutive_timeouts++;
+                            if (consecutive_timeouts >= MAX_JIGGER_TIMEOUTS) {
+                                break;
+                            }
+                        } else {
+                            consecutive_timeouts = 0;  /* partial progress, reset */
+                        }
+                    } else {
+                        consecutive_timeouts = 0;
+                    }
                 }
                 idt++;
-                if (options.quickmode) 
+                if (options.quickmode)
                     break;
             }
 
