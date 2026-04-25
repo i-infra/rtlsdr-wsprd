@@ -103,9 +103,18 @@ struct receiver_options {
     bool     noreport;
     bool     selftest;
     bool     writefile;
+    bool     writerawfile;
     bool     readfile;
     char     *filename;
+    char     *rawfilename;
 };
+
+
+/* Raw pre-downsampling capture state (shared: written by rtlsdr thread,
+   rotated by main thread). */
+static FILE *rawFP = NULL;
+static volatile bool rawRotateRequested = false;
+static uint64_t rawSamplesWritten = 0;  /* IQ pairs written in current file */
 
 
 /* states & options are shared with other external objects */
@@ -122,6 +131,70 @@ const char wsprnet_app_version[]  = "rtlsdr-056";  // 10 chars max.!
 
 /* Callback for each buffer received */
 static void rtlsdr_callback(unsigned char *samples, uint32_t samples_count, void *ctx) {
+    /* Raw pre-downsampling capture: write the original unsigned 8-bit IQ
+       samples (RTL-SDR native "cu8" format) straight to disk, before the
+       in-place fs/4 mixer below mutates `samples`. cu8 is the wire format
+       the dongle produces; dumping it as-is is 4x smaller than cf32 and
+       is directly readable by rtl_* tools and inspectrum. */
+    if (rx_options.writerawfile) {
+        if (rawRotateRequested || rawFP == NULL) {
+            if (rawFP) {
+                LOG(LOG_DEBUG, "raw capture -- closing file after %llu IQ pairs (%.2f s @ %u sps)\n",
+                    (unsigned long long)rawSamplesWritten,
+                    (double)rawSamplesWritten / SAMPLING_RATE, SAMPLING_RATE);
+                fclose(rawFP);
+                rawFP = NULL;
+            }
+            rawRotateRequested = false;
+            rawSamplesWritten = 0;
+
+            char rawname[64];
+            time_t rawtime;
+            time(&rawtime);
+            struct tm *gtm = gmtime(&rawtime);
+            snprintf(rawname, sizeof(rawname) - 1,
+                     "%.8s_%04d-%02d-%02d_%02d-%02d-%02d.raw.cu8",
+                     rx_options.rawfilename,
+                     gtm->tm_year + 1900, gtm->tm_mon + 1, gtm->tm_mday,
+                     gtm->tm_hour, gtm->tm_min, gtm->tm_sec);
+            rawFP = fopen(rawname, "wb");
+            if (!rawFP) {
+                fprintf(stderr, "raw capture -- cannot open %s\n", rawname);
+                rx_options.writerawfile = false;
+            } else {
+                /* Passband info: the tuner LO is set to realfreq + FS4_RATE + 1500,
+                   so DC of the raw stream = realfreq + FS4_RATE + 1500 Hz, and it
+                   spans +/- SAMPLING_RATE/2 around that. */
+                uint32_t lo_hz  = rx_options.realfreq + FS4_RATE + 1500;
+                double   lo_mhz = lo_hz / 1e6;
+                double   span   = SAMPLING_RATE / 1e6;
+                fprintf(stderr,
+                        "raw capture -- opened %s\n"
+                        "                LO (DC) = %.6f MHz  (dial %u Hz + %d Hz offset)\n"
+                        "                sample rate = %u sps (interleaved cu8, unsigned 8-bit)\n"
+                        "                passband = [%.6f .. %.6f] MHz (span %.3f MHz)\n"
+                        "                WSPR window = [%.6f .. %.6f] MHz (dial+1400..+1600 Hz)\n",
+                        rawname, lo_mhz, rx_options.dialfreq,
+                        (int)(lo_hz - rx_options.dialfreq),
+                        SAMPLING_RATE,
+                        lo_mhz - span/2.0, lo_mhz + span/2.0, span,
+                        (rx_options.dialfreq + 1400) / 1e6,
+                        (rx_options.dialfreq + 1600) / 1e6);
+            }
+        }
+        if (rawFP) {
+            size_t nw = fwrite(samples, sizeof(unsigned char), samples_count, rawFP);
+            if (nw != samples_count) {
+                fprintf(stderr, "raw capture -- short write, disabling\n");
+                fclose(rawFP);
+                rawFP = NULL;
+                rx_options.writerawfile = false;
+            } else {
+                rawSamplesWritten += samples_count / 2;
+            }
+        }
+    }
+
     int8_t *sigIn = (int8_t *)samples;
 
     /* CIC buffers/vars */
@@ -347,6 +420,7 @@ void initrx_options() {
     rx_options.device         = 0;
     rx_options.selftest       = false;
     rx_options.writefile      = false;
+    rx_options.writerawfile   = false;
     rx_options.readfile       = false;
     rx_options.noreport       = false;
 }
@@ -480,7 +554,7 @@ void saveSample(float *iSamples, float *qSamples) {
         time(&rawtime);
         struct tm *gtm = gmtime(&rawtime);
 
-        snprintf(filename, sizeof(filename) - 1, "%.8s_%04d-%02d-%02d_%02d-%02d-%02d.iq",
+        snprintf(filename, sizeof(filename) - 1, "%.8s_%04d-%02d-%02d_%02d-%02d-%02d.cf32",
                  rx_options.filename,
                  gtm->tm_year + 1900,
                  gtm->tm_mon + 1,
@@ -700,12 +774,13 @@ void decodeRecordedFile(const char *filename) {
     int32_t n_results = 0;
 
     size_t fnlen = strlen(filename);
-    if (fnlen >= 3 && strcmp(&filename[fnlen-3], ".iq") == 0) {
+    if ((fnlen >= 3 && strcmp(&filename[fnlen-3], ".iq") == 0) ||
+        (fnlen >= 5 && strcmp(&filename[fnlen-5], ".cf32") == 0)) {
         samples_len = readRawIQfile(iSamples, qSamples, filename);
     } else if (fnlen >= 3 && strcmp(&filename[fnlen-3], ".c2") == 0) {
         samples_len = readC2file(iSamples, qSamples, filename);
     } else {
-        fprintf(stderr, "Not a valid extension!! (only .iq & .c2 files)\n");
+        fprintf(stderr, "Not a valid extension!! (only .iq, .cf32 & .c2 files)\n");
         return;
     }
 
@@ -787,7 +862,7 @@ int32_t decoderSelfTest() {
     }
 
     /* Save the test sample */
-    writeRawIQfile(iSamples, qSamples, "selftest.iq");
+    writeRawIQfile(iSamples, qSamples, "selftest.cf32");
 
     /* Search & decode the signal */
     wspr_decode(iSamples, qSamples, samples_len, dec_options, dec_results, &n_results);
@@ -841,9 +916,11 @@ void usage(FILE *stream, int32_t status) {
             "\t-x do not report any spots on web clusters (WSPRnet, PSKreporter...)\n"
             "Debugging options:\n"
             "\t-t decoder self-test (generate a signal & decode), no parameter\n"
-            "\t-w write received signal and exit [filename prefix]\n"
-            "\t-r read signal with .iq or .c2 format, decode and exit [filename]\n"
-            "\t   (raw format: 375sps, float 32 bits, 2 channels)\n"
+            "\t-w write decimated signal (375 sps cf32) after each frame [filename prefix]\n"
+            "\t-W also write raw pre-downsampling capture (2.4 Msps cu8) [filename prefix]\n"
+            "\t   (one file per 2-min frame; ~576 MB/file, native RTL format)\n"
+            "\t-r read signal with .cf32, .iq or .c2 format, decode and exit [filename]\n"
+            "\t   (-w/-r raw format: 375sps, float 32 bits, 2 channels interleaved)\n"
             "Other options:\n"
             "\t--help show list of options\n"
             "\t--version show version of program\n"
@@ -860,7 +937,7 @@ int main(int argc, char **argv) {
     curl_global_init(CURL_GLOBAL_ALL);
 
     uint32_t opt;
-    char    *short_options = "f:c:l:g:ao:p:u:d:n:i:tw:r:HQSx";
+    char    *short_options = "f:c:l:g:ao:p:u:d:n:i:tw:W:r:HQSx";
     int32_t  option_index = 0;
     struct option long_options[] = {
         {"help",    no_argument, 0, 0 },
@@ -1010,6 +1087,10 @@ int main(int argc, char **argv) {
                 rx_options.writefile = true;
                 rx_options.filename = optarg;
                 break;
+            case 'W':  // Also write raw pre-downsampling cu8 capture
+                rx_options.writerawfile = true;
+                rx_options.rawfilename = optarg;
+                break;
             case 'r':  // Read a signal and decode
                 rx_options.readfile = true;
                 rx_options.filename = optarg;
@@ -1063,6 +1144,29 @@ int main(int argc, char **argv) {
 
     if (rx_options.writefile == true) {
         fprintf(stdout, "Saving IQ file planned with prefix: %.8s\n", rx_options.filename);
+    }
+
+    if (rx_options.writerawfile == true) {
+        uint32_t lo_hz  = rx_options.realfreq + FS4_RATE + 1500;
+        double   span   = SAMPLING_RATE / 1e6;
+        fprintf(stdout,
+                "Saving raw pre-downsampling capture with prefix: %.8s\n"
+                "  format      : interleaved cu8 (unsigned 8-bit I,Q)\n"
+                "  sample rate : %u sps\n"
+                "  tuner LO    : %.6f MHz (= DC in capture)\n"
+                "  dial freq   : %.6f MHz (= DC - %d Hz)\n"
+                "  passband    : [%.6f .. %.6f] MHz (span %.3f MHz)\n"
+                "  WSPR window : [%.6f .. %.6f] MHz (dial+1400..+1600 Hz)\n"
+                "  file size   : ~%llu MB per 2-minute frame\n",
+                rx_options.rawfilename,
+                SAMPLING_RATE,
+                lo_hz / 1e6,
+                rx_options.dialfreq / 1e6,
+                (int)(lo_hz - rx_options.dialfreq),
+                lo_hz / 1e6 - span/2.0, lo_hz / 1e6 + span/2.0, span,
+                (rx_options.dialfreq + 1400) / 1e6,
+                (rx_options.dialfreq + 1600) / 1e6,
+                (unsigned long long)(120ULL * SAMPLING_RATE * 2ULL / (1024ULL * 1024ULL)));
     }
 
     /* If something goes wrong... */
@@ -1218,6 +1322,9 @@ int main(int argc, char **argv) {
         /* Switch to the other buffer and trigger the decoder */
         rx_state.bufferIndex = (rx_state.bufferIndex + 1) % 2;
         rx_state.iqIndex[rx_state.bufferIndex] = 0;
+        if (rx_options.writerawfile) {
+            rawRotateRequested = true;  /* callback closes & reopens on its next entry */
+        }
         safe_cond_signal(&decState.ready_cond, &decState.ready_mutex);
         usleep(100000); /* Give a chance to the other thread to update the nloop counter */
     }
@@ -1237,6 +1344,15 @@ int main(int argc, char **argv) {
     /* Destroy the lock/cond/thread */
     pthread_cond_destroy(&decState.ready_cond);
     pthread_mutex_destroy(&decState.ready_mutex);
+
+    /* Close any open raw capture file (the RX thread has stopped by now). */
+    if (rawFP) {
+        LOG(LOG_DEBUG, "raw capture -- closing final file after %llu IQ pairs (%.2f s)\n",
+            (unsigned long long)rawSamplesWritten,
+            (double)rawSamplesWritten / SAMPLING_RATE);
+        fclose(rawFP);
+        rawFP = NULL;
+    }
 
     curl_global_cleanup();
     printf("Bye!\n");
