@@ -19,15 +19,23 @@
 
 #pragma once
 
+#include <stdio.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
 
 
-static void rtlsdr_callback(unsigned char *samples, uint32_t samples_count, void *ctx);
-static void sigint_callback_handler(int signum);
-static void *rtlsdr_rx(void *arg);
-static void *decoder(void *arg);
+/* Debugging logs */
+#define LOG_DEBUG   0
+#define LOG_INFO    1
+#define LOG_WARN    2
+#define LOG_ERROR   3
+#ifndef LOG_LEVEL
+#define LOG_LEVEL   LOG_ERROR
+#endif
+#define LOG(level, ...)  if (level >= LOG_LEVEL) fprintf(stderr, __VA_ARGS__)
+
+
 void initSampleStorage();
 void initrx_options();
 void initDecoder_options();

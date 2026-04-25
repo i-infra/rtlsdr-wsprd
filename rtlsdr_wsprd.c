@@ -43,17 +43,15 @@
 #define FIR_TAPS            32
 
 
-/* Debugging logs */
-#define LOG_DEBUG   0
-#define LOG_INFO    1
-#define LOG_WARN    2
-#define LOG_ERROR   3
-#define LOG_LEVEL   LOG_ERROR
-#define LOG(level, ...)  if (level >= LOG_LEVEL) fprintf(stderr, __VA_ARGS__)
-
-
 #define safe_cond_signal(n, m) pthread_mutex_lock(m); pthread_cond_signal(n); pthread_mutex_unlock(m)
 #define safe_cond_wait(n, m) pthread_mutex_lock(m); pthread_cond_wait(n, m); pthread_mutex_unlock(m)
+
+
+/* Forward declarations (kept static to this TU) */
+static void rtlsdr_callback(unsigned char *samples, uint32_t samples_count, void *ctx);
+static void sigint_callback_handler(int signum);
+static void *rtlsdr_rx(void *arg);
+static void *decoder(void *arg);
 
 
 /* Thread for decoding */
@@ -570,6 +568,9 @@ int32_t readRawIQfile(float *iSamples, float *qSamples, const char *filename) {
     int32_t nread = fread(filebuffer, sizeof(float), 2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE, fd);
     int32_t recsize = nread / 2;
     fclose(fd);
+    LOG(LOG_DEBUG, "readRawIQfile('%s'): read %d floats -> %d IQ pairs (expected %d pairs = %d s @ %d sps)\n",
+        filename, nread, recsize,
+        SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE, SIGNAL_LENGHT, SIGNAL_SAMPLE_RATE);
 
     /* Convert the interleaved buffer into 2 buffers */
     for (int32_t i = 0; i < recsize; i++) {
@@ -589,11 +590,14 @@ int32_t readRawIQfile(float *iSamples, float *qSamples, const char *filename) {
         if (absQ > maxSig)
             maxSig = absQ;
     }
+    float preNormMax = maxSig;
     maxSig = 0.5 / maxSig;
     for (int i = 0; i < recsize; i++) {
         iSamples[i] *= maxSig;
         qSamples[i] *= maxSig;
     }
+    LOG(LOG_DEBUG, "readRawIQfile: pre-norm max|I|,|Q|=%.3g  scale=%.3g  post-norm peak=0.5\n",
+        preNormMax, maxSig);
 
     return recsize;
 }

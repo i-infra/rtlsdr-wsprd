@@ -41,9 +41,12 @@ DEPS = $(OBJS:.o=.d) $(TEST_OBJS:.o=.d)
 
 TARGETS = rtlsdr_wsprd
 
-.PHONY: all clean install test
+.PHONY: all debug clean install test
 
 all: $(TARGETS)
+
+debug: CFLAGS += -O0 -g -DLOG_LEVEL=0
+debug: $(TARGETS)
 
 %.o: %.c
 	${CC} ${CFLAGS} $(EXTRA_OPTS) -c $< -o $@

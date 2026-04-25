@@ -33,10 +33,12 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <fftw3.h>
 
+#include "../rtlsdr_wsprd.h"
 #include "./wsprd.h"
 #include "./fano.h"
 #include "./nhash.h"
@@ -529,10 +531,15 @@ int wspr_decode(float  *idat,
         return -1;
     }
 
+    LOG(LOG_DEBUG, "wspr_decode: samples=%d npasses=%d quickmode=%d subtraction=%d usehashtable=%d\n",
+        samples, options.npasses, options.quickmode, options.subtraction, options.usehashtable);
+
     /* Main loop starts here */
     for (int ipass = 0; ipass < options.npasses; ipass++) {
         if (ipass == 1 && uniques == 0)
             break;
+        LOG(LOG_DEBUG, "--- Pass %d (maxdrift=%d minsync1=%.3f minsync2=%.3f) ---\n",
+            ipass, (ipass < 2) ? 4 : 0, minsync1, (ipass < 2) ? 0.12f : 0.10f);
         if (ipass < 2) {
             maxdrift = 4;
             minsync2 = 0.12;
@@ -630,6 +637,8 @@ int wspr_decode(float  *idat,
             }
         }
 
+        int npk_before_band = npk;
+
         // Don't waste time on signals outside of the range [fmin,fmax].
         int i = 0;
         for (int j = 0; j < npk; j++) {
@@ -645,9 +654,13 @@ int wspr_decode(float  *idat,
         /* DC spike rejection: RTL-SDR LO leakage produces a strong false
            peak near 0 Hz.  After sorting by SNR, check if the top candidate
            is suspiciously close to DC and far stronger than the runner-up. */
+        int npk_before_dc = npk;
         if (npk >= 2 &&
             fabsf(candidates[0].freq) <= DC_REJECT_BW &&
             (candidates[0].snr - candidates[1].snr) >= DC_REJECT_MARGIN) {
+            LOG(LOG_DEBUG, "Pass %d: rejecting DC spike: freq=%+.2f Hz  snr=%.2f dB (next=%.2f dB, delta=%.1f dB)\n",
+                ipass, candidates[0].freq, candidates[0].snr, candidates[1].snr,
+                candidates[0].snr - candidates[1].snr);
             /* Shift array down by one, dropping the DC candidate. */
             for (int k = 0; k < npk - 1; k++)
                 candidates[k] = candidates[k + 1];
@@ -655,7 +668,16 @@ int wspr_decode(float  *idat,
         } else if (npk == 1 &&
                    fabsf(candidates[0].freq) <= DC_REJECT_BW &&
                    candidates[0].snr >= DC_REJECT_MARGIN) {
+            LOG(LOG_DEBUG, "Pass %d: rejecting lone DC spike: freq=%+.2f Hz  snr=%.2f dB\n",
+                ipass, candidates[0].freq, candidates[0].snr);
             npk = 0;
+        }
+
+        LOG(LOG_DEBUG, "Pass %d: noise_level=%.3g  peaks=%d  in-band[%.0f..%.0f Hz]=%d  after-dc=%d\n",
+            ipass, noise_level, npk_before_band, fmin, fmax, npk_before_dc, npk);
+        for (int c = 0; c < npk && c < 10; c++) {
+            LOG(LOG_DEBUG, "  cand[%2d] freq=%+7.2f Hz  snr=%6.2f dB\n",
+                c, candidates[c].freq, candidates[c].snr);
         }
 
         /* Make coarse estimates of shift (DT), freq, and drift
@@ -722,6 +744,9 @@ int wspr_decode(float  *idat,
          could each work on one candidate at a time.
          */
 
+        int dbg_gate_sync1 = 0, dbg_tried = 0, dbg_gate_sync2 = 0, dbg_gate_rms = 0,
+            dbg_fano_fail = 0, dbg_fano_ok = 0, dbg_dupes = 0, dbg_noprint = 0;
+
         for (int j = 0; j < npk; j++) {
             memset(callsign, 0, sizeof(char) * 13);
             memset(call_loc_pow, 0, sizeof(char) * 23);
@@ -733,6 +758,7 @@ int wspr_decode(float  *idat,
             float drift = candidates[j].drift;
             float sync  = candidates[j].sync;
             int   shift = candidates[j].shift;
+            float coarse_sync = sync;
 
             // Search for best sync lag (mode 0)
             fstep = 0.0;
@@ -760,8 +786,12 @@ int wspr_decode(float  *idat,
 
             if (sync > minsync1) {
                 worth_a_try = 1;
+                dbg_tried++;
             } else {
                 worth_a_try = 0;
+                dbg_gate_sync1++;
+                LOG(LOG_DEBUG, "  [%3d] freq=%+7.2f  coarse_sync=%.3f  refined_sync=%.3f < minsync1=%.3f  SKIP\n",
+                    j, candidates[j].freq, coarse_sync, sync, minsync1);
             }
 
             int idt = 0, ii = 0;
@@ -788,12 +818,18 @@ int wspr_decode(float  *idat,
                     deinterleave(symbols);
                     not_decoded = fano(&metric, &cycles, &maxnp, decdata, symbols, NBITS,
                                        mettab, delta, maxcycles);
+                    LOG(LOG_DEBUG, "  [%3d] freq=%+7.2f  jigger=%+3d  sync=%.3f  rms=%.2f  fano: %s  cycles=%u metric=%u\n",
+                        j, freq, ii, sync, rms,
+                        not_decoded ? "FAIL" : "OK", cycles, metric);
                     if (not_decoded) {
+                        dbg_fano_fail++;
                         /* Detect Fano timeout: cycles >= maxcycles*NBITS means the
                            decoder hit the wall without converging. */
                         if (cycles >= (unsigned int)maxcycles * NBITS) {
                             consecutive_timeouts++;
                             if (consecutive_timeouts >= MAX_JIGGER_TIMEOUTS) {
+                                LOG(LOG_DEBUG, "  [%3d] bail: %d consecutive Fano timeouts, abandoning candidate\n",
+                                    j, consecutive_timeouts);
                                 break;
                             }
                         } else {
@@ -802,6 +838,11 @@ int wspr_decode(float  *idat,
                     } else {
                         consecutive_timeouts = 0;
                     }
+                } else {
+                    if (!(sync > minsync2)) dbg_gate_sync2++;
+                    if (!(rms > minrms))   dbg_gate_rms++;
+                    LOG(LOG_DEBUG, "  [%3d] freq=%+7.2f  jigger=%+3d  sync=%.3f (min=%.3f)  rms=%.2f (min=%.2f)  gated, no fano\n",
+                        j, freq, ii, sync, minsync2, rms, minrms);
                 }
                 idt++;
                 if (options.quickmode)
@@ -809,6 +850,7 @@ int wspr_decode(float  *idat,
             }
 
             if (worth_a_try && !not_decoded) {
+                dbg_fano_ok++;
                 for (i = 0; i < 11; i++) {
                     if (decdata[i] > 127) {
                         message[i] = decdata[i] - 256;
@@ -821,6 +863,9 @@ int wspr_decode(float  *idat,
                 // sanity checks on grid and power, and return
                 // call_loc_pow string and also callsign (for de-duping).
                 int32_t noprint = unpk_(message, hashtab, loctab, call_loc_pow, call, loc, pwr, callsign);
+                LOG(LOG_DEBUG, "  [%3d] unpk_ -> noprint=%d  call='%s'  loc='%s'  pwr='%s'  msg='%s'\n",
+                    j, noprint, call, loc, pwr, call_loc_pow);
+                if (noprint) dbg_noprint++;
                 if (options.subtraction && (ipass == 0) && !noprint) {
                     unsigned char channel_symbols[NSYM];
 
@@ -841,6 +886,7 @@ int wspr_decode(float  *idat,
                     if (!strcmp(callsign, allcalls[i]) && (fabs(freq - allfreqs[i]) < 3.0))
                         dupe = 1;
                 }
+                if (dupe) dbg_dupes++;
 
                 if (!dupe) {
                     snprintf(allcalls[uniques], sizeof(allcalls[0]), "%s", callsign);
@@ -864,7 +910,13 @@ int wspr_decode(float  *idat,
                 }
             }
         }
+
+        LOG(LOG_DEBUG, "Pass %d summary: candidates=%d  sync1_skip=%d  tried=%d  sync2_gate=%d  rms_gate=%d  fano_fail=%d  fano_ok=%d  noprint=%d  dupes=%d  uniques_total=%d\n",
+            ipass, npk, dbg_gate_sync1, dbg_tried, dbg_gate_sync2, dbg_gate_rms,
+            dbg_fano_fail, dbg_fano_ok, dbg_noprint, dbg_dupes, uniques);
     }
+
+    LOG(LOG_DEBUG, "wspr_decode done: %d unique decode(s)\n", uniques);
 
     /* Sort the result */
     qsort(decodes, uniques, sizeof(struct decoder_results), results_snr_desc);
