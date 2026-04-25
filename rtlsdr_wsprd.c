@@ -638,7 +638,8 @@ int32_t readRawIQfile(float *iSamples, float *qSamples, const char *filename) {
         return 0;
     }
 
-    /* Read the IQ file */
+    /* Read cf32 (complex float32) interleaved IQ file — compatible with
+       inspectrum, GNU Radio, and other SDR tools expecting this format. */
     int32_t nread = fread(filebuffer, sizeof(float), 2 * SIGNAL_LENGHT * SIGNAL_SAMPLE_RATE, fd);
     int32_t recsize = nread / 2;
     fclose(fd);
@@ -1137,13 +1138,13 @@ int main(int argc, char **argv) {
     }
 
     if (rx_options.readfile == true) {
-        fprintf(stdout, "Reading IQ file: %s\n", rx_options.filename);
+        fprintf(stdout, "Reading cf32/IQ file: %s\n", rx_options.filename);
         decodeRecordedFile(rx_options.filename);
         return EXIT_SUCCESS;
     }
 
     if (rx_options.writefile == true) {
-        fprintf(stdout, "Saving IQ file planned with prefix: %.8s\n", rx_options.filename);
+        fprintf(stdout, "Saving cf32 file planned with prefix: %.8s\n", rx_options.filename);
     }
 
     if (rx_options.writerawfile == true) {

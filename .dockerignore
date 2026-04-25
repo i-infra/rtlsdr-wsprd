@@ -2,11 +2,13 @@
 *.o
 *.d
 *.iq
+*.cf32
+*.cu8
 art/
 .github
 documentation/
 CLAUDE.md
 PLAN.md
 RAPPORT.md
-selftest.iq
+selftest.cf32
 tests/test_wsprd

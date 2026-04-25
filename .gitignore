@@ -2,6 +2,8 @@
 *.d
 *.a
 *.iq
+*.cf32
+*.cu8
 *.c2
 rtlsdr_wsprd
 tests/test_wsprd

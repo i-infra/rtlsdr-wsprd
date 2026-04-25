@@ -64,7 +64,7 @@ test: all tests/test_wsprd
 -include $(DEPS)
 
 clean:
-	rm -f *.o wsprd/*.o tests/*.o *.d wsprd/*.d tests/*.d $(TARGETS) tests/test_wsprd fftw_wisdom.dat hashtable.txt selftest.iq
+	rm -f *.o wsprd/*.o tests/*.o *.d wsprd/*.d tests/*.d $(TARGETS) tests/test_wsprd fftw_wisdom.dat hashtable.txt selftest.cf32
 
 install:
 	install rtlsdr_wsprd /usr/local/bin/rtlsdr_wsprd
